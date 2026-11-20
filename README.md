@@ -89,3 +89,11 @@ requirements.txt       Reproducible runtime dependencies
 ## Next steps for a real retention program
 
 Add dated usage and complaint events, define a forward-looking churn label, validate using out-of-time cohorts, use margin and intervention costs in CLV, run a randomized offer experiment, and monitor calibration, drift, fairness, and campaign outcomes.
+
+
+## Observed demo results
+
+- Holdout ROC AUC: **0.843**
+- Holdout average precision: **0.649**
+
+These are results from a stratified random holdout of the IBM Telco sample. They are dataset-specific and should not be treated as production performance.
