@@ -73,10 +73,8 @@ def _prepare_experiment(
     return features, treatment, experiment[outcome].astype(int)
 
 
-def _build_t_learner(features: pd.DataFrame):
-    """Create a CausalML binary T-learner with a compact sklearn base model."""
-    from causalml.inference.meta import BaseTClassifier
-
+def _build_preprocessor(features: pd.DataFrame) -> ColumnTransformer:
+    """Prepare mixed customer fields before passing numeric arrays to CausalML."""
     numeric = features.select_dtypes(include=["number", "bool"]).columns.tolist()
     categorical = [column for column in features.columns if column not in numeric]
     transformer = ColumnTransformer(
@@ -104,20 +102,19 @@ def _build_t_learner(features: pd.DataFrame):
         ],
         remainder="drop",
     )
-    estimator = Pipeline(
-        [
-            ("features", transformer),
-            (
-                "outcome_model",
-                HistGradientBoostingClassifier(
-                    max_iter=100,
-                    max_leaf_nodes=15,
-                    min_samples_leaf=80,
-                    l2_regularization=3.0,
-                    random_state=42,
-                ),
-            ),
-        ]
+    return transformer
+
+
+def _build_t_learner():
+    """Create a CausalML binary T-learner with a compact sklearn base model."""
+    from causalml.inference.meta import BaseTClassifier
+
+    estimator = HistGradientBoostingClassifier(
+        max_iter=100,
+        max_leaf_nodes=15,
+        min_samples_leaf=80,
+        l2_regularization=3.0,
+        random_state=42,
     )
     return BaseTClassifier(learner=estimator, control_name=0)
 
@@ -140,10 +137,13 @@ def fit_uplift(
         random_state=42,
         stratify=(treatment.astype(str) + "_" + y.astype(str)),
     )
-    model = _build_t_learner(features)
-    model.fit(features.iloc[train_idx], treatment.iloc[train_idx], y.iloc[train_idx])
-    train_effect = np.asarray(model.predict(features.iloc[train_idx])).reshape(-1)
-    holdout_effect = np.asarray(model.predict(features.iloc[test_idx])).reshape(-1)
+    preprocessor = _build_preprocessor(features)
+    train_features = preprocessor.fit_transform(features.iloc[train_idx])
+    holdout_features = preprocessor.transform(features.iloc[test_idx])
+    model = _build_t_learner()
+    model.fit(train_features, treatment.iloc[train_idx], y.iloc[train_idx])
+    train_effect = np.asarray(model.predict(train_features)).reshape(-1)
+    holdout_effect = np.asarray(model.predict(holdout_features)).reshape(-1)
 
     train_scores = pd.DataFrame(
         {"row_id": features.index.to_numpy()[train_idx], "estimated_uplift": train_effect}
