@@ -11,7 +11,9 @@ An interactive Streamlit application that scores telecom churn risk, estimates c
 - Kaplan–Meier survival curve and Cox proportional hazards model; active customers are right-censored at observed tenure.
 - Estimated remaining lifetime and discounted monthly-charge CLV proxy.
 - K-means customer segments and a downloadable scored-customer CSV.
-- Offer budget/ROI scenario simulator with explicit response assumptions.
+- Offer budget/ROI scenario simulator for the Telco sample, clearly labeled as an assumption-based scenario.
+- Campaign uplift analysis using CausalML's T-learner on the randomized Hillstrom email experiment. The app compares one email treatment arm with the no-email control and reports observed lift for a top-ranked subgroup on a held-out randomized sample.
+- Ranked campaign response recommendations and a campaign economics scenario based on the measured Hillstrom holdout lift.
 - Optional PostgreSQL source-data load to `customer_source` using SQLAlchemy.
 - IBM sample download or user-supplied IBM-compatible CSV.
 
@@ -50,6 +52,12 @@ The app derives average monthly spend, a service count, and a month-to-month con
 
 The simulator computes `targeted customers × assumed response rate` for expected saves and compares their average predicted CLV with discount expense. It does not estimate individual treatment effects. For a valid uplift model, collect randomized offer assignment, offer details/cost, exposure date, and a defined post-offer retention outcome; evaluate uplift on a randomized holdout.
 
+### Randomized campaign uplift
+
+The **Campaign uplift** tab loads the [Hillstrom MineThatData email experiment](http://www.minethatdata.com/Kevin_Hillstrom_MineThatData_E-MailAnalytics_DataMiningChallenge_2008.03.20.csv), credited to Kevin Hillstrom / MineThatData (2008). It contains 64,000 customers randomly assigned to a men's email, a women's email, or no email; the app compares one selected email arm with the no-email control. It fits a CausalML T-learner using pre-campaign features, then evaluates treatment-control response-rate difference for the highest-scored share on a stratified randomized holdout. The interval shown is an approximate 95% normal interval.
+
+The benchmark outcomes are email visits and purchases. They are not telecom retention outcomes. The campaign economics panel scales the measured benchmark lift to a user-entered contact count, response value, and contact cost; these business inputs remain assumptions. To estimate retention-offer effects, replace the benchmark with an adequately powered randomized retention experiment and define a follow-up churn/retention outcome. Do not transfer the Hillstrom effect to telecom customers.
+
 ## Architecture
 
 ```mermaid
@@ -63,17 +71,21 @@ flowchart LR
   F --> H[K-means segments]
   F --> I[Offer scenario simulator]
   B --> J[(Optional PostgreSQL)]
+  L[Hillstrom randomized campaign] --> M[CausalML T-learner]
+  M --> N[Holdout subgroup lift and campaign economics]
   F --> K[Streamlit dashboard and CSV export]
   G --> K
   H --> K
   I --> K
+  N --> K
 ```
 
 ## Repository layout
 
 ```text
 app.py                 Streamlit user interface
-src/pipeline.py        Data preparation and modeling
+src/pipeline.py        Telco preparation and modeling
+src/uplift.py          Randomized experiment preparation and CausalML uplift
 DATA_DICTIONARY.md     Source fields and derived fields
 ARCHITECTURE.md        System flow and database notes
 requirements.txt       Reproducible runtime dependencies
@@ -82,14 +94,12 @@ requirements.txt       Reproducible runtime dependencies
 ## Evaluation and demo checklist
 
 - Verify the app displays the customer count, churn rate, validation metrics, SHAP/global drivers, survival and CLV estimates, segments, and offer scenarios.
+- Load Hillstrom and verify treatment/control counts, holdout lift and interval, response-by-rank chart, economics scenario, and ranked-customer CSV.
 - Save a short screen recording covering Overview → Drivers → Survival & value → Offer ROI.
-- For a meaningful performance result, record ROC AUC and average precision shown in Drivers; these are dataset-specific and should not be reported as production performance.
+- Holdout results observed in the deployed demo: ROC AUC **0.843** and average precision **0.649**. These are dataset-specific results from a stratified random holdout of the IBM Telco sample and should not be reported as production performance.
 - Test the optional PostgreSQL action only with a disposable database; it replaces `customer_source`.
 
 ## Next steps for a real retention program
-
-Add dated usage and complaint events, define a forward-looking churn label, validate using out-of-time cohorts, use margin and intervention costs in CLV, run a randomized offer experiment, and monitor calibration, drift, fairness, and campaign outcomes.
-
 
 ## Observed demo results
 
@@ -97,3 +107,5 @@ Add dated usage and complaint events, define a forward-looking churn label, vali
 - Holdout average precision: **0.649**
 
 These are results from a stratified random holdout of the IBM Telco sample. They are dataset-specific and should not be treated as production performance.
+
+Add dated usage and complaint events, define a forward-looking churn label, validate using out-of-time cohorts, use margin and intervention costs in CLV, run a randomized retention-offer experiment (the included Hillstrom experiment is email marketing, not churn retention), and monitor calibration, drift, fairness, and campaign outcomes.

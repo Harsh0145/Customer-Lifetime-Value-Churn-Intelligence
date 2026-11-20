@@ -29,3 +29,18 @@ The app expects the IBM Telco Customer Churn sample's core schema. User uploads 
 | `segment` | K-means group from tenure, monthly charges, risk, and CLV |
 
 The source has no complaint, dated usage, offer assignment, or treatment response fields. No causal uplift feature is derived from it.
+
+## Randomized campaign benchmark (separate dataset)
+
+The Campaign uplift tab uses the Hillstrom MineThatData email experiment, which has three randomized `segment` values: `No E-Mail`, `Mens E-Mail`, and `Womens E-Mail`. The app selects one email arm at a time and compares it with `No E-Mail`.
+
+| Field | Meaning | Use |
+| --- | --- | --- |
+| `recency`, `history`, `history_segment` | Pre-campaign purchase recency and spend history | Uplift model covariates |
+| `mens`, `womens`, `newbie`, `channel`, `zip_code` | Pre-campaign customer descriptors | Uplift model covariates |
+| `segment` | Randomly assigned email/control group | Treatment assignment |
+| `visit` | Whether the customer visited after campaign | Binary response outcome |
+| `conversion` | Whether the customer purchased after campaign | Binary response outcome |
+| `spend` | Post-campaign spending | Excluded from the binary-outcome model to prevent leakage |
+
+The campaign benchmark estimates response uplift, not telecom churn-save uplift. Its results must not be applied to Telco customers.

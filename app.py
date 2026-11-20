@@ -20,11 +20,17 @@ from src.pipeline import (  # noqa: E402
     uplift_simulation,
     write_postgres,
 )
+from src.uplift import HILLSTROM_CREDIT, HILLSTROM_URL, fit_uplift, load_hillstrom
 
 
 @st.cache_resource(show_spinner=False)
 def get_model_bundle(frame: pd.DataFrame):
     return model_bundle(frame)
+
+
+@st.cache_data(show_spinner=False)
+def get_uplift_result(frame: pd.DataFrame, arm: str, outcome: str, target_fraction: float):
+    return fit_uplift(frame, treatment_arm=arm, outcome=outcome, target_fraction=target_fraction)
 
 
 st.set_page_config(page_title="Customer Intelligence", page_icon="📡", layout="wide")
@@ -78,7 +84,7 @@ with st.spinner("Fitting churn, survival, and segmentation models…"):
         st.exception(exc)
         st.stop()
 
-overview, drivers, survival, offers, data_tab = st.tabs(["Overview", "Drivers", "Survival & value", "Offer ROI", "Data & database"])
+overview, drivers, survival, offers, uplift_tab, data_tab = st.tabs(["Overview", "Drivers", "Survival & value", "Offer ROI", "Campaign uplift", "Data & database"])
 
 with overview:
     m1, m2, m3, m4 = st.columns(4)
@@ -124,6 +130,98 @@ with offers:
     d.metric("Expected retained revenue", f"${result['retained_revenue']:,.0f}")
     st.metric("Net value after offer cost", f"${result['net_value']:,.0f}", delta=f"ROI {result['roi']:.1%}" if result['cost'] else "No discount cost")
     st.caption("Savings/value assumes expected saved customers would otherwise churn, uses estimated CLV as retained revenue, and ignores margin, discount redemption, and contact costs.")
+
+with uplift_tab:
+    st.subheader("Randomized campaign uplift")
+    st.markdown(
+        "Estimate who responds to an offer using a real randomized campaign experiment. "
+        "The Hillstrom email experiment is a marketing-response benchmark; its outcomes are "
+        "purchases or visits, not telecom churn prevention."
+    )
+    st.caption(f"Source: {HILLSTROM_CREDIT}. Each email arm is compared with the no-email control.")
+    campaign_upload = st.file_uploader(
+        "Or upload your randomized campaign CSV",
+        type="csv",
+        key="uplift_campaign_upload",
+        help="This version accepts the Hillstrom email experiment CSV with segment, visit, and conversion columns.",
+    )
+    load_campaign = st.button("Load Hillstrom randomized campaign", key="load_hillstrom_campaign")
+    if campaign_upload is not None:
+        try:
+            st.session_state.campaign_frame = pd.read_csv(campaign_upload)
+        except Exception as exc:
+            st.error(f"Could not read campaign CSV: {exc}")
+    if load_campaign:
+        try:
+            with st.spinner("Downloading the 64,000-customer randomized experiment…"):
+                st.session_state.campaign_frame = load_hillstrom()
+        except Exception as exc:
+            st.error(f"Could not download Hillstrom: {exc}. Upload the CSV to continue.")
+    if "campaign_frame" not in st.session_state:
+        st.info("Choose Load Hillstrom randomized campaign or upload an experiment CSV to begin.")
+        st.markdown(f"[Open the Hillstrom source dataset]({HILLSTROM_URL})")
+    else:
+        campaign_frame = st.session_state.campaign_frame
+        if {"segment", "visit", "conversion"}.issubset(campaign_frame.columns):
+            c1, c2, c3 = st.columns(3)
+            arm = c1.selectbox("Email treatment arm", ["Mens E-Mail", "Womens E-Mail"])
+            outcome = c2.selectbox("Response outcome", ["conversion", "visit"])
+            target_fraction = c3.slider("Target highest-uplift share", 5, 50, 20, 5) / 100
+            if st.button("Estimate campaign uplift", type="primary", key="fit_campaign_uplift"):
+                try:
+                    with st.spinner("Fitting CausalML T-learner and evaluating randomized holdout…"):
+                        st.session_state.uplift_result = get_uplift_result(
+                            campaign_frame, arm, outcome, target_fraction
+                        )
+                        st.session_state.uplift_result_key = (arm, outcome, target_fraction)
+                except ImportError:
+                    st.error("CausalML is not installed. Redeploy after committing the updated requirements.txt.")
+                except Exception as exc:
+                    st.error(f"Uplift model could not be fitted: {exc}")
+            result = st.session_state.get("uplift_result")
+            if result and st.session_state.get("uplift_result_key") == (arm, outcome, target_fraction):
+                st.success(f"Model: {result['method']}")
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Experiment customers", f"{result['n_customers']:,}")
+                m2.metric("Treatment / control", f"{result['treatment_n']:,} / {result['control_n']:,}")
+                m3.metric(f"Observed holdout lift · top {target_fraction:.0%}", f"{result['targeted_uplift']:+.2%}", help=f"95% approximate CI: {result['targeted_ci_low']:+.2%} to {result['targeted_ci_high']:+.2%}")
+                m4.metric("Overall holdout lift", f"{result['overall_uplift']:+.2%}", help=f"95% approximate CI: {result['overall_ci_low']:+.2%} to {result['overall_ci_high']:+.2%}")
+                st.caption(
+                    f"Lift confidence intervals use the randomized holdout and are approximate normal intervals. "
+                    f"The score ranks customers; the reported top-group result is measured on holdout customers, "
+                    f"not on the data used to train the model. Holdout contains {result['holdout_n']:,} customers."
+                )
+                if not result["holdout_curve"].empty:
+                    curve = result["holdout_curve"].sort_values("ranked_group", ascending=False)
+                    st.plotly_chart(
+                        px.bar(curve, x="ranked_group", y="observed_uplift", title="Observed randomized lift by predicted-uplift rank group", labels={"ranked_group":"Highest predicted uplift group", "observed_uplift":"Treatment minus control response rate"}),
+                        use_container_width=True,
+                    )
+                st.markdown("#### Campaign economics scenario")
+                st.caption("This scales the measured holdout response lift to a planned contact volume. Enter value per incremental response and contact cost; it is a campaign scenario, not a churn-save estimate.")
+                econ_a, econ_b, econ_c = st.columns(3)
+                planned_contacts = econ_a.number_input("Planned contacts", min_value=0, value=min(5000, result["n_customers"]), step=500)
+                value_per_response = econ_b.number_input("Value per incremental response ($)", min_value=0.0, value=80.0, step=5.0)
+                contact_cost = econ_c.number_input("Cost per contact ($)", min_value=0.0, value=0.05, step=0.01, format="%.2f")
+                incremental_responses = planned_contacts * max(0.0, result["targeted_uplift"])
+                campaign_cost = planned_contacts * contact_cost
+                incremental_value = incremental_responses * value_per_response
+                net_campaign_value = incremental_value - campaign_cost
+                e1, e2, e3, e4 = st.columns(4)
+                e1.metric("Expected incremental responses", f"{incremental_responses:,.1f}")
+                e2.metric("Estimated incremental value", f"${incremental_value:,.2f}")
+                e3.metric("Campaign contact cost", f"${campaign_cost:,.2f}")
+                e4.metric("Net scenario value", f"${net_campaign_value:,.2f}")
+                st.dataframe(result["recommended_customers"].head(20), use_container_width=True, hide_index=True)
+                st.download_button(
+                    "Download ranked uplift recommendations",
+                    result["recommended_customers"].to_csv(index=False).encode("utf-8"),
+                    "campaign_uplift_recommendations.csv",
+                    "text/csv",
+                )
+                st.warning("The estimated lift applies to this randomized email benchmark. Do not apply it as a causal telecom retention effect; train and evaluate on your own randomized retention-offer experiment before using it for churn campaigns.")
+        else:
+            st.error("Uploaded campaign data must use the Hillstrom schema (segment, visit, conversion) for this version.")
 
 with data_tab:
     st.subheader("Dataset preview")
